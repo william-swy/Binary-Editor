@@ -11,6 +11,7 @@
   window.addEventListener(
     "keydown",
     function (e) {
+      console.log(`key ${e.key} pressed`);
       if (e.target.className === "table-entry") {
         if (
           !isValidHex(e.key) &&
@@ -20,6 +21,7 @@
           e.key !== "ArrowDown" &&
           e.key !== "Backspace"
         ) {
+          console.log("Canceled");
           e.preventDefault();
           return false;
         }
@@ -32,6 +34,7 @@
         e.preventDefault();
         return false;
       }
+      console.log("Not cancelled");
     },
     true
   );
@@ -75,6 +78,7 @@
     }
 
     providerUpdate(hexString) {
+      console.log(hexString);
       if (hexString.length % 2 !== 0) {
         throw new Error("hexString length not multiple of two");
       }
@@ -121,7 +125,14 @@
     }
 
     updateProvider() {
-      // TODO
+      if (this.content.length === 1) {
+        vscode.postMessage({ type: "editor-update", content: "" });
+      } else {
+        vscode.postMessage({
+          type: "editor-update",
+          content: this.content.join(""),
+        });
+      }
     }
 
     render() {

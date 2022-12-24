@@ -1,11 +1,17 @@
 import * as vscode from "vscode";
-import { BinaryDocument, ContentUpdateEventMetadata } from "./binaryDocument";
+import { BinaryDocument, NotifyVSCodeMetadata, NotifyWebviewMetadata } from "./binaryDocument";
 import { toHex } from "./util";
+
+interface WebViewInfo {
+  uri: string,
+  webview: vscode.WebviewPanel,
+}
 
 export class BinaryEditorProvider
   implements vscode.CustomEditorProvider<BinaryDocument>
 {
   private static readonly viewType = "binary-file-editor.binaryEdit";
+  private existingWebViews = new Set<WebViewInfo>();
 
   public static register(context: vscode.ExtensionContext): vscode.Disposable {
     console.log("Editor registered");
@@ -20,9 +26,8 @@ export class BinaryEditorProvider
     vscode.CustomDocumentEditEvent<BinaryDocument>
   >();
 
-  public readonly onDidChangeCustomDocument: vscode.Event<
-    vscode.CustomDocumentEditEvent<BinaryDocument>
-  > = this.documentChangeEventEmitter.event;
+  public readonly onDidChangeCustomDocument =
+    this.documentChangeEventEmitter.event;
 
   private constructor(context: vscode.ExtensionContext) {
     this.context = context;
@@ -31,23 +36,23 @@ export class BinaryEditorProvider
   saveCustomDocument(
     document: BinaryDocument,
     cancellation: vscode.CancellationToken
-  ): Thenable<void> {
-    throw new Error("Method not implemented.");
+  ): Promise<void> {
+    return document.save(cancellation);
   }
 
   saveCustomDocumentAs(
     document: BinaryDocument,
     destination: vscode.Uri,
     cancellation: vscode.CancellationToken
-  ): Thenable<void> {
-    throw new Error("Method not implemented.");
+  ): Promise<void> {
+    return document.saveAs(destination, cancellation);
   }
 
   revertCustomDocument(
     document: BinaryDocument,
     cancellation: vscode.CancellationToken
-  ): Thenable<void> {
-    throw new Error("Method not implemented.");
+  ): Promise<void> {
+    return document.revert(cancellation); 
   }
 
   backupCustomDocument(
@@ -63,14 +68,29 @@ export class BinaryEditorProvider
     openContext: vscode.CustomDocumentOpenContext,
     token: vscode.CancellationToken
   ): Promise<BinaryDocument> {
-    const document = await BinaryDocument.create(uri);
-    console.log(`Opened document ${uri}`);
+    const document = await BinaryDocument.create(uri, openContext);
 
-    const listener = document.onContentUpdatedEvent((e) =>
-      this.handleDocumentChange(e, document)
-    );
+    const webViewListener = document.onContentUpdatedEvent((e: NotifyWebviewMetadata) => {
+      for (const webview of this.existingWebViews) {
+        if (webview.uri === uri.toString()) {
+          console.log(`Sending: ${e.content}`);
+          webview.webview.webview.postMessage({ type: "update", value: e.content });
+        }
+      }
+    });
 
-    document.onDisposeEvent(() => listener.dispose());
+    const vscodeListener = document.onContentChangedEvent((e: NotifyVSCodeMetadata) => {
+      this.documentChangeEventEmitter.fire({
+        document: document,
+        undo: e.undo,
+        redo: e.redo,
+      });
+    });
+
+    document.onDisposeEvent(() => {
+      webViewListener.dispose();
+      vscodeListener.dispose();
+    });
 
     return document;
   }
@@ -85,19 +105,17 @@ export class BinaryEditorProvider
       enableCommandUris: false,
       enableForms: false,
     };
+    const webViewInfo = {uri: document.uri.toString(), webview: webviewPanel};
+    this.existingWebViews.add(webViewInfo);
+    webviewPanel.onDidDispose(() => {
+      this.existingWebViews.delete(webViewInfo);
+    });
     webviewPanel.webview.html = this.generateHTML(webviewPanel.webview);
 
-    const listener = webviewPanel.webview.onDidReceiveMessage((e) =>
+    const webViewListener = webviewPanel.webview.onDidReceiveMessage((e) =>
       this.handleWebviewMessage(e, document, webviewPanel)
     );
-    webviewPanel.onDidDispose(() => listener.dispose());
-  }
-
-  private handleDocumentChange(
-    e: ContentUpdateEventMetadata,
-    document: BinaryDocument
-  ) {
-    // TODO
+    webviewPanel.onDidDispose(() => webViewListener.dispose());
   }
 
   private handleWebviewMessage(
@@ -108,12 +126,15 @@ export class BinaryEditorProvider
     switch (e.type) {
       case "ready": {
         console.log("Got ready from webview");
-        console.log(`Document content ${document.content}`);
         webviewPanel.webview.postMessage({
           type: "ready-ack",
-          value: toHex(document.content),
+          value: document.getCurrentDocumentContent(),
         });
         break;
+      }
+      case "editor-update": {
+        console.log("Got update from editor");
+        document.makeEdit(e.content);
       }
     }
   }
