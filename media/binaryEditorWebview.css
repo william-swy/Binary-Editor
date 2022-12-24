@@ -1,0 +1,9 @@
+table#editor-table {
+    table-layout: fixed;
+  }
+.table-entry {
+    width: 48px;
+  }
+.table-address {
+    width: 96px;
+}
