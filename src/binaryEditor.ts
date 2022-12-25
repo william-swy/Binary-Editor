@@ -1,17 +1,17 @@
 import * as vscode from "vscode";
-import { BinaryDocument, NotifyVSCodeMetadata, NotifyWebviewMetadata } from "./binaryDocument";
-import { toHex } from "./util";
+import { BinaryDocument, DocumentContent, NotifyVSCodeMetadata, NotifyWebviewMetadata } from "./binaryDocument";
+import { isByteStringArr, isHexString, splitHexStringToByteChunks, toHex } from "./util";
 
-interface WebViewInfo {
+interface WebViewInfoUri {
   uri: string,
-  webview: vscode.WebviewPanel,
+  webviewInfo: vscode.WebviewPanel,
 }
 
 export class BinaryEditorProvider
   implements vscode.CustomEditorProvider<BinaryDocument>
 {
   private static readonly viewType = "binary-file-editor.binaryEdit";
-  private existingWebViews = new Set<WebViewInfo>();
+  private existingWebViews = new Set<WebViewInfoUri>();
 
   public static register(context: vscode.ExtensionContext): vscode.Disposable {
     console.log("Editor registered");
@@ -60,7 +60,8 @@ export class BinaryEditorProvider
     context: vscode.CustomDocumentBackupContext,
     cancellation: vscode.CancellationToken
   ): Thenable<vscode.CustomDocumentBackup> {
-    throw new Error("Method not implemented.");
+    console.log("Backup called");
+    return document.backup(context.destination, cancellation);
   }
 
   async openCustomDocument(
@@ -74,7 +75,7 @@ export class BinaryEditorProvider
       for (const webview of this.existingWebViews) {
         if (webview.uri === uri.toString()) {
           console.log(`Sending: ${e.content}`);
-          webview.webview.webview.postMessage({ type: "update", value: e.content });
+          webview.webviewInfo.webview.postMessage({ type: "update", value: e.content.content });
         }
       }
     });
@@ -100,12 +101,13 @@ export class BinaryEditorProvider
     webviewPanel: vscode.WebviewPanel,
     token: vscode.CancellationToken
   ): void | Thenable<void> {
+    console.log("resolve called");
     webviewPanel.webview.options = {
       enableScripts: true,
       enableCommandUris: false,
       enableForms: false,
     };
-    const webViewInfo = {uri: document.uri.toString(), webview: webviewPanel};
+    const webViewInfo: WebViewInfoUri = {uri: document.uri.toString(), webviewInfo: webviewPanel};
     this.existingWebViews.add(webViewInfo);
     webviewPanel.onDidDispose(() => {
       this.existingWebViews.delete(webViewInfo);
@@ -125,21 +127,37 @@ export class BinaryEditorProvider
   ): void {
     switch (e.type) {
       case "ready": {
-        console.log("Got ready from webview");
         webviewPanel.webview.postMessage({
           type: "ready-ack",
-          value: document.getCurrentDocumentContent(),
+          value: document.getCurrentDocumentContent().content,
         });
         break;
       }
       case "editor-update": {
-        console.log("Got update from editor");
-        document.makeEdit(e.content);
+        const content = e.content as string[];
+        console.log(content);
+        const newContent: DocumentContent = {
+          content: content,
+          valid: isByteStringArr(content),
+        };
+        document.makeEdit(newContent);
+        webviewPanel.webview.postMessage({
+          type: "update",
+          value: content,
+        });
       }
     }
   }
 
   private generateHTML(webview: vscode.Webview): string {
+    // TODO: fix with webpack to use TS instead of JS
+    const libDisplayUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(
+        this.context.extensionUri,
+        "media",
+        "editorDisplay.js"
+      )
+    );
     const scriptUri = webview.asWebviewUri(
       vscode.Uri.joinPath(
         this.context.extensionUri,
@@ -163,6 +181,7 @@ export class BinaryEditorProvider
         </head>
         <body>
             <div id="editor-content"></div>
+            <script src="${libDisplayUri}"></script>
             <script src="${scriptUri}"></script>
         </body>
         </html>
